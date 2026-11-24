@@ -1,0 +1,41 @@
+
+import os
+import requests
+from flask import Flask, request
+
+app = Flask(__name__)
+
+TOKEN = os.environ.get("BOT_TOKEN")
+API = f"https://api.telegram.org/bot{TOKEN}"
+
+@app.route("/", methods=["GET"])
+def home():
+    return "IKO Signals is running!"
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    data = request.json or {}
+    message = data.get("message", {})
+    chat_id = message.get("chat", {}).get("id")
+    text = message.get("text", "")
+
+    if not chat_id:
+        return "OK"
+
+    if text == "/start":
+        reply = (
+            "Salam! IKO Siqnallar botuna xoş gəldin!\n"
+            "1 dəqiqəlik siqnal sistemi hazırlanır.\n"
+            "Hələlik canlı siqnal aktiv deyil."
+        )
+    else:
+        reply = "Kömək üçün /start yaz."
+
+    requests.post(
+        f"{API}/sendMessage",
+        json={"chat_id": chat_id, "text": reply}
+    )
+    return "OK"
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
