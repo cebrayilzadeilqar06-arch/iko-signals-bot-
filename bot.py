@@ -40,18 +40,29 @@ def rsi(closes, period=14):
         for i in range(1, len(closes))
     ]
 
-    recent = changes[-period:]
-    gains = [max(x, 0) for x in recent]
-    losses = [max(-x, 0) for x in recent]
+    if len(changes) < period:
+        raise ValueError("RSI ucun melumat azdir")
 
-    avg_gain = sum(gains) / period
-    avg_loss = sum(losses) / period
+    gains = [max(x, 0) for x in changes]
+    losses = [max(-x, 0) for x in changes]
+
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    for i in range(period, len(changes)):
+        avg_gain = (
+            avg_gain * (period - 1) + gains[i]
+        ) / period
+
+        avg_loss = (
+            avg_loss * (period - 1) + losses[i]
+        ) / period
 
     if avg_loss == 0:
-        return 100.0
+        return 100.0 if avg_gain > 0 else 50.0
 
     rs = avg_gain / avg_loss
-    return 100 - 100 / (1 + rs)
+    return 100 - (100 / (1 + rs))
 
 
 def get_signal():
@@ -78,16 +89,15 @@ def get_signal():
     slow = ema(closes[-60:], 21)
     strength = rsi(closes)
 
+    direction = None
+
     if fast > slow and price > fast and 52 <= strength <= 68:
         direction = "YUXARI"
 
     elif fast < slow and price < fast and 32 <= strength <= 48:
-        direction = "AŞAĞI"
+        direction = "ASAGI"
 
-    else:
-        direction = None
-
-    return direction, strength, price
+    return direction, strength, price, fast, slow
 
 
 @app.route("/", methods=["GET"])
@@ -98,8 +108,8 @@ def home():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json(silent=True) or {}
-
     message = data.get("message", {})
+
     chat_id = message.get("chat", {}).get("id")
 
     command = (
@@ -113,37 +123,34 @@ def webhook():
         return "OK"
 
     if command in ("/start", "/help"):
-
         reply = (
-            "Salam! IKO Siqnallar botuna xos gelmisen!\\n\\n"
-            "/signal - 1 deqiqelik demo analiz\\n"
-            "/help - komek\\n\\n"
+            "Salam! IKO Siqnallar botuna xos gelmisen!\n\n"
+            "/signal - 1 deqiqelik demo analiz\n"
+            "/help - komek\n\n"
             "Bu sınaq sistemidir. Qazanc zəmanəti yoxdur. "
             "Binance qiymətləri Pocket Option OTC ilə fərqlənə bilər."
         )
 
     elif command == "/signal":
-
         try:
-            direction, strength, price = get_signal()
+            direction, strength, price, fast, slow = get_signal()
 
             if direction:
-
                 reply = (
-                    f"IKO DEMO SIQNALI\\n"
-                    f"BTC/USDT: {direction}\\n"
-                    f"Müddət: 1 dəqiqə\\n"
-                    f"Qiymət: {price:.2f}\\n"
-                    f"RSI: {strength:.1f}\\n"
-                    "Nəticəyə zəmanət yoxdur."
+                    f"IKO DEMO SIQNALI\n"
+                    f"BTC/USDT: {direction}\n"
+                    f"Müddət: 1 dəqiqə\n"
+                    f"Qiymət: {price:.2f}\n"
+                    f"RSI: {strength:.1f}\n"
+                    f"EMA 9: {fast:.2f}\n"
+                    f"EMA 21: {slow:.2f}\n"
+                    "Qazanc zəmanəti yoxdur."
                 )
-
             else:
-
                 reply = (
-                    f"SIQNAL YOXDUR\\n"
-                    f"BTC/USDT: {price:.2f}\\n"
-                    f"RSI: {strength:.1f}\\n"
+                    f"SIQNAL YOXDUR\n"
+                    f"BTC/USDT: {price:.2f}\n"
+                    f"RSI: {strength:.1f}\n"
                     "Şərtlər uyğun deyil. Gözlə."
                 )
 
@@ -155,7 +162,6 @@ def webhook():
         reply = "Əmr tanınmadı. Siqnal üçün /signal yaz."
 
     send_message(chat_id, reply)
-
     return "OK"
 
 
