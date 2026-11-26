@@ -1,48 +1,43 @@
 
 import os
+import re
 import requests
 from flask import Flask, request
 
 app = Flask(__name__)
 
 TOKEN = os.environ.get("BOT_TOKEN")
-API = f"https://api.telegram.org/bot{TOKEN}" if TOKEN else None
+OTC_KEY = os.environ.get("OTCHARTS_API_KEY")
+TG_API = f"https://api.telegram.org/bot{TOKEN}" if TOKEN else None
+DATA_API = "https://otcharts.com/v1/candles"
 
 
 def send_message(chat_id, text):
-    if not API:
-        app.logger.error("BOT_TOKEN yoxdur")
+    if not TG_API:
         return
-
     try:
         requests.post(
-            f"{API}/sendMessage",
+            f"{TG_API}/sendMessage",
             json={"chat_id": chat_id, "text": text},
-            timeout=10
+            timeout=15
         ).raise_for_status()
     except requests.RequestException:
         app.logger.exception("Telegram xetasi")
 
 
 def ema(values, period):
-    alpha = 2 / (period + 1)
     result = values[0]
-
+    alpha = 2 / (period + 1)
     for value in values[1:]:
         result = alpha * value + (1 - alpha) * result
-
     return result
 
 
-def rsi(closes, period=14):
+def rsi(values, period=14):
     changes = [
-        closes[i] - closes[i - 1]
-        for i in range(1, len(closes))
+        values[i] - values[i - 1]
+        for i in range(1, len(values))
     ]
-
-    if len(changes) < period:
-        raise ValueError("RSI ucun melumat azdir")
-
     gains = [max(x, 0) for x in changes]
     losses = [max(-x, 0) for x in changes]
 
@@ -58,107 +53,113 @@ def rsi(closes, period=14):
         ) / period
 
     if avg_loss == 0:
-        return 100.0 if avg_gain > 0 else 50.0
+        return 100 if avg_gain else 50
 
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    return 100 - 100 / (1 + avg_gain / avg_loss)
 
 
-def get_signal():
+def get_signal(symbol):
+    if not OTC_KEY:
+        raise ValueError("OTCHARTS_API_KEY tapilmadi")
+
     response = requests.get(
-        "https://api.binance.com/api/v3/klines",
+        DATA_API,
         params={
-            "symbol": "BTCUSDT",
-            "interval": "1m",
+            "venue": "otc",
+            "symbol": symbol,
+            "tf": 60,
             "limit": 100
         },
-        timeout=10
+        headers={"Authorization": f"Bearer {OTC_KEY}"},
+        timeout=20
     )
-    response.raise_for_status()
 
-    candles = response.json()
-    closes = [float(c[4]) for c in candles[:-1]]
+    if response.status_code != 200:
+        raise ValueError(
+            f"Pocket Option melumat xetasi: {response.status_code}"
+        )
 
-    if len(closes) < 60:
-        raise ValueError("Melumat azdir")
+    data = response.json()
+    candles = data.get("candles", [])
+
+    # Son şam hələ formalaşır, analizə daxil edilmir.
+    candles = candles[:-1]
+
+    if len(candles) < 60:
+        raise ValueError("Analiz ucun kifayet qeder sam yoxdur")
+
+    if data.get("gaps", {}).get("missingBars", 0) > 0:
+        raise ValueError("Qiymet melumatinda bosluq var")
+
+    closes = [float(c["close"]) for c in candles]
 
     price = closes[-1]
-    fast = ema(closes[-30:], 9)
-    slow = ema(closes[-60:], 21)
+    fast = ema(closes, 9)
+    slow = ema(closes, 21)
     strength = rsi(closes)
 
-    direction = None
+    direction = "SIQNAL YOXDUR"
 
     if fast > slow and price > fast and 52 <= strength <= 68:
         direction = "YUXARI"
     elif fast < slow and price < fast and 32 <= strength <= 48:
         direction = "ASAGI"
 
-    return direction, strength, price, fast, slow
+    return direction, price, strength, fast, slow
 
 
 @app.route("/", methods=["GET"])
 def home():
-    return "IKO Signals is running!"
+    return "IKO Pocket Option OTC bot is running!"
 
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json(silent=True) or {}
     message = data.get("message") or {}
-
     chat_id = (message.get("chat") or {}).get("id")
-    raw_text = message.get("text") or ""
-
-    # Əmri boşluq və bot istifadəçi adı ilə birlikdə tanı
-    parts = raw_text.strip().lower().split()
-    command = parts[0].split("@", 1)[0] if parts else ""
+    raw = (message.get("text") or "").strip()
 
     if not chat_id:
         return "OK"
 
+    parts = raw.split()
+    command = parts[0].lower().split("@")[0] if parts else ""
+
     if command in ("/start", "/help"):
         reply = (
-            "Salam! IKO Siqnallar botuna xos gelmisen!\n\n"
-            "/signal - 1 deqiqelik demo analiz\n"
-            "/help - komek\n\n"
-            "Bu sınaq sistemidir. Qazanc zəmanəti yoxdur. "
-            "Binance qiymətləri Pocket Option OTC ilə fərqlənə bilər."
+            "IKO Pocket Option OTC siqnallari!\n\n"
+            "/signal - EUR/USD OTC analizi\n"
+            "/signal GBPUSD_otc - basqa aktiv\n\n"
+            "Demo ucun istifade et. Qazanc zemaneti yoxdur."
         )
 
     elif command == "/signal":
-        try:
-            direction, strength, price, fast, slow = get_signal()
+        symbol = parts[1] if len(parts) > 1 else "EURUSD_otc"
 
-            if direction:
-                reply = (
-                    f"IKO DEMO SIQNALI\n"
-                    f"BTC/USDT: {direction}\n"
-                    f"Müddət: 1 dəqiqə\n"
-                    f"Qiymət: {price:.2f}\n"
-                    f"RSI: {strength:.1f}\n"
-                    f"EMA 9: {fast:.2f}\n"
-                    f"EMA 21: {slow:.2f}\n"
-                    "Qazanc zəmanəti yoxdur."
-                )
-            else:
-                reply = (
-                    f"SIQNAL YOXDUR\n"
-                    f"BTC/USDT: {price:.2f}\n"
-                    f"RSI: {strength:.1f}\n"
-                    "Şərtlər uyğun deyil. Gözlə."
-                )
+        if not re.fullmatch(r"[A-Za-z0-9#]+_otc", symbol):
+            reply = "Aktiv formatı yanlışdır. Nümunə: /signal EURUSD_otc"
+        else:
+            try:
+                direction, price, strength, fast, slow = get_signal(symbol)
 
-        except (requests.RequestException, ValueError, KeyError, IndexError):
-            app.logger.exception("Analiz xetasi")
-            reply = "Məlumat alınmadı. Bir az sonra yenidən yoxla."
+                reply = (
+                    "IKO POCKET OPTION OTC\n"
+                    f"Aktiv: {symbol}\n"
+                    f"Istiqamet: {direction}\n"
+                    "Muddet: 1 deqiqe\n"
+                    f"Qiymet: {price}\n"
+                    f"RSI: {strength:.1f}\n"
+                    f"EMA 9: {fast}\n"
+                    f"EMA 21: {slow}\n"
+                    "Qazanc zemaneti yoxdur."
+                )
+            except (requests.RequestException, ValueError, KeyError) as e:
+                app.logger.exception("OTC analiz xetasi")
+                reply = f"OTC melumat alinmadi: {e}"
 
     else:
-        reply = (
-            f"Əmr tanınmadı.\n"
-            f"Alınan mətn: {raw_text!r}\n"
-            "İstifadə et: /start və ya /signal"
-        )
+        reply = "Istifade et: /start ve ya /signal"
 
     send_message(chat_id, reply)
     return "OK"
