@@ -53,7 +53,6 @@ def rsi(closes, period=14):
         avg_gain = (
             avg_gain * (period - 1) + gains[i]
         ) / period
-
         avg_loss = (
             avg_loss * (period - 1) + losses[i]
         ) / period
@@ -75,10 +74,9 @@ def get_signal():
         },
         timeout=10
     )
-
     response.raise_for_status()
-    candles = response.json()
 
+    candles = response.json()
     closes = [float(c[4]) for c in candles[:-1]]
 
     if len(closes) < 60:
@@ -93,7 +91,6 @@ def get_signal():
 
     if fast > slow and price > fast and 52 <= strength <= 68:
         direction = "YUXARI"
-
     elif fast < slow and price < fast and 32 <= strength <= 48:
         direction = "ASAGI"
 
@@ -108,16 +105,14 @@ def home():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json(silent=True) or {}
-    message = data.get("message", {})
+    message = data.get("message") or {}
 
-    chat_id = message.get("chat", {}).get("id")
+    chat_id = (message.get("chat") or {}).get("id")
+    raw_text = message.get("text") or ""
 
-    command = (
-        (message.get("text") or "")
-        .strip()
-        .lower()
-        .split("@", 1)[0]
-    )
+    # Əmri boşluq və bot istifadəçi adı ilə birlikdə tanı
+    parts = raw_text.strip().lower().split()
+    command = parts[0].split("@", 1)[0] if parts else ""
 
     if not chat_id:
         return "OK"
@@ -159,7 +154,11 @@ def webhook():
             reply = "Məlumat alınmadı. Bir az sonra yenidən yoxla."
 
     else:
-        reply = "Əmr tanınmadı. Siqnal üçün /signal yaz."
+        reply = (
+            f"Əmr tanınmadı.\n"
+            f"Alınan mətn: {raw_text!r}\n"
+            "İstifadə et: /start və ya /signal"
+        )
 
     send_message(chat_id, reply)
     return "OK"
